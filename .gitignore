@@ -1,0 +1,26 @@
+__pycache__/
+.pytest_cache/
+build/
+dist/
+outputs/
+*.pyc
+*.pyo
+*.pyd
+*.pdf
+config/read_across.local.json
+data/read_across/*.csv
+data/read_across/*.tsv
+data/read_across/*.xlsx
+data/read_across/*.gz
+data/read_across/*.db-shm
+data/read_across/*.db-wal
+!data/read_across/README.md
+
+# Local workspace-only instructions and tooling artifacts should not be published.
+AGENT.MD
+AGENTS.MD
+.github/agents/
+.github/copilot-instructions.md
+.claude/
+.codex/
+docs/CONTRIBUTION_AI.md

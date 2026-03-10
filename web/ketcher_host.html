@@ -1,0 +1,105 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Редактор структуры</title>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <style>
+    :root{
+      --bg:#111315;
+      --panel:#171B21;
+      --panel-border:#2A2F36;
+      --btn:#1F6FEB;
+      --btn-hover:#2B7DFF;
+      --text:#E6E6E6;
+      --muted:#BFC7D5;
+    }
+    html,body{margin:0;height:100%;background:var(--bg);color:var(--text);overflow:hidden}
+    #bar{
+      display: flex;
+      align-items: center;        /* ← вертикальное центрирование */
+      justify-content: flex-start;
+      gap: 12px;
+
+      padding: 10px 12px;
+      min-height: 44px;           /* ← фиксируем “красивую” высоту */
+      box-sizing: border-box;
+
+      background: #14171A;
+      border-bottom: 0px solid #2A2F36;
+      }
+
+    #bar .btn{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      background:var(--btn);
+      color:#fff;
+      border:0;
+      border-radius:10px;
+      padding:8px 14px;
+      font-weight:600;
+      font-size:13px;
+      cursor:pointer;
+      box-shadow:0 6px 14px rgba(31,111,235,.25);
+    }
+    #bar .btn:hover{background:var(--btn-hover)}
+    #bar .btn:active{transform:translateY(1px)}
+    #frame{width:100%;height:calc(100% - 52px);border:0;background:#fff}
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <button class="btn" onclick="useStructure()">Использовать структуру</button>
+  </div>
+
+  <!-- ВАЖНО: грузим локальный standalone Ketcher -->
+  <iframe id="frame"></iframe>
+
+<script>
+  // 1) WebChannel bridge
+  window.bridge = null;
+  new QWebChannel(qt.webChannelTransport, (channel) => {
+    window.bridge = channel.objects.bridge;
+  });
+
+  // 2) Load iframe
+  const frame = document.getElementById('frame');
+  // путь относительно ketcher_host.html:
+  frame.src = "./ketcher/index.html";
+
+  // 3) helper: найти ketcher API в iframe
+  async function getKetcherApi() {
+    const w = frame.contentWindow;
+    if (!w) return null;
+
+    // Частые варианты
+    if (w.ketcher) return w.ketcher;
+    if (w.Ketcher && w.Ketcher.ketcher) return w.Ketcher.ketcher;
+
+    // Иногда ketcher лежит как globalThis.ketcher
+    if (w.globalThis && w.globalThis.ketcher) return w.globalThis.ketcher;
+
+    return null;
+  }
+
+  // 4) Use button
+  async function useStructure() {
+    if (!window.bridge) { return; }
+
+    const api = await getKetcherApi();
+    if (!api) { return; }
+
+    try {
+      // В Ketcher обычно есть getSmiles() / getMolfile()
+      const smiles = await api.getSmiles?.();
+      if (!smiles) { return; }
+
+      window.bridge.submitSmiles(smiles);
+    } catch (e) {
+    }
+  }
+  window.useStructure = useStructure;
+</script>
+</body>
+</html>

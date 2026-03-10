@@ -1,0 +1,12 @@
+cairosvg==2.8.2
+joblib==1.5.3
+numpy==2.4.2
+pandas==3.0.0
+pyside6==6.10.1
+pyside6_addons==6.10.1
+pyside6_essentials==6.10.1
+pytest==9.0.2
+rdkit==2025.9.3
+reportlab==4.4.9
+scikit_learn==1.6.1
+svglib==1.6.0

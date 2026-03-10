@@ -1,0 +1,56 @@
+{
+  "tasks": {
+    "svr_logp": {
+      "type": "sklearn_svr",
+      "models_dir": "models",
+      "active": "v1",
+      "versions": {
+        "v1": {
+          "model_file": "svr_model.pkl",
+          "meta_file": "svr_meta.json"
+        }
+      }
+    },
+    "torch_logp": {
+      "type": "torch_state",
+      "models_dir": "models",
+      "active": "v1",
+      "versions": {
+        "v1": {
+          "model_file": "mlp_regression_state.pt",
+          "meta_file": "mlp_regression_meta.json"
+        }
+      }
+    },
+    "toxicity": {
+      "type": "sklearn_pipeline",
+      "models_dir": "models",
+      "active": "randomforest_v1",
+      "versions": {
+        "knn_v1": {
+          "pipeline_pkl": "knn_tox_pipeline.pkl",
+          "meta_json": "knn_tox_pipeline_meta.json"
+        },
+        "bagging_v1": {
+          "pipeline_pkl": "bagging_tox_pipeline.pkl",
+          "meta_json": "bagging_tox_pipeline_meta.json"
+        },
+        "randomforest_v1": {
+          "pipeline_pkl": "randomforest_tox_pipeline.pkl",
+          "meta_json": "randomforest_tox_pipeline_meta.json"
+        }
+      }
+    },
+    "pesticide_class": {
+      "type": "sklearn_pipeline",
+      "models_dir": "models",
+      "active": "randomforest_v1",
+      "versions": {
+        "randomforest_v1": {
+          "pipeline_pkl": "randomforest_pesticide_pipeline.pkl",
+          "meta_json": "randomforest_pesticide_meta.json"
+        }
+      }
+    }
+  }
+}

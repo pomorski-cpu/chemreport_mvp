@@ -1,0 +1,52 @@
+{
+  "_from": "jsme-editor",
+  "_id": "jsme-editor@2024.4.29",
+  "_inBundle": false,
+  "_integrity": "sha512-B6D0jlYLjPAUHU8gGoHXIf4wcaNAAk5LaZj+46NRMzZKM3/+rY3e+g2GEMX0RtvWbZmhOcU6f2WSgymgpIi4MQ==",
+  "_location": "/jsme-editor",
+  "_phantomChildren": {},
+  "_requested": {
+    "type": "tag",
+    "registry": true,
+    "raw": "jsme-editor",
+    "name": "jsme-editor",
+    "escapedName": "jsme-editor",
+    "rawSpec": "",
+    "saveSpec": null,
+    "fetchSpec": "latest"
+  },
+  "_requiredBy": [
+    "#USER",
+    "/"
+  ],
+  "_resolved": "https://registry.npmjs.org/jsme-editor/-/jsme-editor-2024.4.29.tgz",
+  "_shasum": "e82af48b1e5bd4496f10fd5ead35fa0a6d81618f",
+  "_spec": "jsme-editor",
+  "_where": "C:\\Users\\brute\\Desktop\\chemreport_mvp\\chemreport-desktop\\web\\jsme",
+  "author": {
+    "name": "Peter Ertl, Bruno Bienfait"
+  },
+  "bugs": {
+    "url": "https://github.com/jsme-editor/jsme-editor.github.io/issues"
+  },
+  "bundleDependencies": false,
+  "deprecated": false,
+  "description": "JSME molecule editor",
+  "homepage": "https://jsme-editor.github.io/",
+  "keywords": [
+    "molecule",
+    "reaction",
+    "editor",
+    "JavaScript",
+    "GWT"
+  ],
+  "license": "BSD-3-Clause",
+  "main": "jsme.nocache.js",
+  "name": "jsme-editor",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jsme-editor/jsme-editor.github.io/tree/main/dist/jsme"
+  },
+  "scripts": {},
+  "version": "2024.4.29"
+}

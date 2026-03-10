@@ -1,0 +1,47 @@
+{
+  "database": "data/read_across/read_across.db",
+  "category_table": "category_dataset",
+  "targets": [
+    {
+      "key": "logp",
+      "table": "logp_dataset",
+      "label_ru": "LogP",
+      "prediction_task": "Прогноз по аналогам (LogP)",
+      "dataset": "",
+      "smiles_col": "SMILES",
+      "value_col": "LogP",
+      "mode": "regression",
+      "enabled": true,
+      "unit": "logP"
+    },
+    {
+      "key": "pesticide_class",
+      "table": "pesticide_class_dataset",
+      "label_ru": "Класс пестицида",
+      "prediction_task": "Прогноз по аналогам (класс пестицида)",
+      "dataset": "",
+      "smiles_col": "SMILES",
+      "value_col": "Class",
+      "mode": "classification",
+      "enabled": true,
+      "unit": ""
+    },
+    {
+      "key": "toxicity",
+      "table": "toxicity_dataset",
+      "label_ru": "Генотоксичность",
+      "prediction_task": "Прогноз по аналогам (генотоксичность)",
+      "dataset": "",
+      "smiles_col": "smiles",
+      "value_col": "Genotoxicity",
+      "mode": "classification",
+      "enabled": true,
+      "unit": "",
+      "value_map": {
+        "Positive": "Генотоксичный",
+        "Negative": "Не генотоксичный"
+      },
+      "exclude_values": ["Ambiguous"]
+    }
+  ]
+}

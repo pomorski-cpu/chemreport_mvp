@@ -1,0 +1,24 @@
+{
+  "version": "dss-v1.0",
+  "toxicity": {
+    "toxic_labels": ["генотоксичный", "toxic", "1"],
+    "prob_medium": 0.55,
+    "prob_high": 0.7
+  },
+  "logp": {
+    "medium": 3.0,
+    "high": 4.5
+  },
+  "tpsa": {
+    "low": 20.0
+  },
+  "domain": {
+    "ood_penalty": 0.35,
+    "mixed_penalty": 0.15
+  },
+  "decision_thresholds": {
+    "approve_max": 0.3,
+    "review_max": 0.6,
+    "reject_max": 0.8
+  }
+}
