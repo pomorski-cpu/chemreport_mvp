@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 import base64
 import io
 import logging
@@ -12,11 +12,10 @@ if BASE_DIR not in sys.path:
 import json
 from datetime import datetime
 from core.io import read_table, detect_input_column, save_table, default_batch_output_path
-from core.chemdraw_io import mol_from_chemdraw, ChemDrawImportError
 
 from rdkit import Chem
 from rdkit.Chem import Draw
-from PySide6.QtCore import Qt,QObject, QThread, Signal,Slot,QUrl, qInstallMessageHandler, QtMsgType
+from PySide6.QtCore import Qt,QObject, QThread, Signal,Slot,QUrl, qInstallMessageHandler, QtMsgType, QTimer, QEventLoop, QMarginsF
 from PySide6.QtWidgets import (
     QSplitter, QFrame,
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -30,7 +29,7 @@ from PySide6.QtSvgWidgets import QSvgWidget
 from core.utils import detect_input_type
 from core.resolver import resolve_from_smiles, ResolveError
 from core.render2d import mol_to_svg
-from core.report import render_report_pdf, render_batch_table_pdf
+from core.report import render_report_html, render_report_pdf, render_batch_table_pdf
 from core.decision_support import DecisionSupport
 from core.logging_utils import configure_logging, get_logger
 from core.read_across import ReadAcrossService
@@ -56,6 +55,9 @@ def _localize_task_name(task: str) -> str:
         "LogP": "LogP",
         "Toxicity": "Токсичность",
         "Pesticide Class": "Класс пестицида",
+        "Bioactivity EC50 Invertebrates": "Биоактивность: EC50, водные беспозвоночные",
+        "Bioactivity LC50 Fish": "Биоактивность: LC50, рыбы",
+        "Bioactivity LD50 Mammals Oral": "Биоактивность: LD50, млекопитающие перорально",
         "Model": "Модель",
     }
     return mapping.get(str(task), str(task))
@@ -264,12 +266,23 @@ class BatchWorker(QObject):
         self.read_across = read_across
         self._cancel_event = threading.Event()
         self._logger = get_logger("batch")
+        specs = [
+            PredictorSpec(task="LogP", predictor=self.predictors["SVR"], coverage_name="SVR"),
+            PredictorSpec(task="Toxicity", predictor=self.predictors["Tox"], coverage_name="Tox"),
+            PredictorSpec(task="Pesticide Class", predictor=self.predictors["Class"], coverage_name="Class"),
+        ]
+        if "BioEC50" in self.predictors:
+            specs.append(PredictorSpec(task='Биоактивность: EC50, водные беспозвоночные', predictor=self.predictors["BioEC50"], coverage_name="BioEC50"))
+        if "BioLC50" in self.predictors:
+            specs.append(PredictorSpec(task='Биоактивность: LC50, рыбы', predictor=self.predictors["BioLC50"], coverage_name="BioLC50"))
+        if "BioLD50" in self.predictors:
+            specs.append(PredictorSpec(task='Биоактивность: LD50, млекопитающие перорально', predictor=self.predictors["BioLD50"], coverage_name="BioLD50"))
+        if "BioEC50Reg" in self.predictors:
+            specs.append(PredictorSpec(task='Биоактивность: EC50 регрессия', predictor=self.predictors["BioEC50Reg"], coverage_name="BioEC50Reg"))
+        if "BioLD50Reg" in self.predictors:
+            specs.append(PredictorSpec(task='Биоактивность: LD50 регрессия', predictor=self.predictors["BioLD50Reg"], coverage_name="BioLD50Reg"))
         self.workflow = DSSWorkflow(
-            [
-                PredictorSpec(task="LogP", predictor=self.predictors["SVR"], coverage_name="SVR"),
-                PredictorSpec(task="Toxicity", predictor=self.predictors["Tox"], coverage_name="Tox"),
-                PredictorSpec(task="Pesticide Class", predictor=self.predictors["Class"], coverage_name="Class"),
-            ],
+            specs,
             decision_support=self.decision_support,
             read_across=self.read_across,
         )
@@ -333,6 +346,13 @@ class BatchWorker(QObject):
                 row["Сводный балл решения"] = ""
                 row["Метка надёжности"] = "Низкая"
                 row["Сводный балл надёжности"] = ""
+                row['Балл опасности DSS'] = ""
+                row['Балл неопределённости DSS'] = ""
+                row['Ключевые причины DSS'] = 'Некорректный SMILES'
+                row['Конфликты DSS'] = ""
+                row['AD-статус'] = 'Недоступно'
+                row['AD-score'] = ''
+                row['AD-сводка'] = 'Некорректный SMILES'
                 results.append(row)
                 self.progress.emit(i + 1, total)
                 continue
@@ -353,6 +373,9 @@ class BatchWorker(QObject):
                 "LogP": "LogP",
                 "Toxicity": "Токсичность",
                 "Pesticide Class": "Класс пестицида",
+        "Bioactivity EC50 Invertebrates": "Биоактивность: EC50, водные беспозвоночные",
+        "Bioactivity LC50 Fish": "Биоактивность: LC50, рыбы",
+        "Bioactivity LD50 Mammals Oral": "Биоактивность: LD50, млекопитающие перорально",
             }
             for prediction in analysis["predictions"]:
                 raw_task = prediction.get("task", "")
@@ -360,12 +383,39 @@ class BatchWorker(QObject):
                 row[f"{prefix}: значение"] = prediction.get("value")
                 row[f"{prefix}: уверенность"] = prediction.get("confidence")
                 row[f"{prefix}: оценка уверенности"] = prediction.get("confidence_score")
+                row[f"{prefix}: модельная уверенность"] = prediction.get("model_confidence")
+                row[f"{prefix}: модельная оценка уверенности"] = prediction.get("model_confidence_score")
+                row[f"{prefix}: калибровка уверенности"] = prediction.get("confidence_calibration")
+                row[f"{prefix}: комментарий"] = prediction.get("notes")
                 row[f"{prefix}: в области применимости"] = prediction.get("in_domain")
+                row[f"{prefix}: AD-статус"] = prediction.get("ad_status_ru") or prediction.get("ad_status")
+                row[f"{prefix}: AD-score"] = prediction.get("ad_score")
+
+            ad_summary = analysis.get("applicability_domain", {}) or {}
+            row["AD-статус"] = ad_summary.get("overall_status_ru", ad_summary.get("overall_status", ""))
+            row["AD-score"] = ad_summary.get("mean_ad_score", "")
+            row["AD-сводка"] = ad_summary.get("summary_ru", "")
 
             decision = analysis.get("decision", {})
             row["Статус решения"] = _localize_decision_status(decision.get("decision_status", ""))
             row["Уровень риска"] = _localize_risk_level(decision.get("risk_level", ""))
             row["Сводный балл решения"] = decision.get("score", "")
+            row['Балл опасности DSS'] = decision.get("hazard_score", "")
+            row['Балл неопределённости DSS'] = decision.get("uncertainty_score", "")
+            evidence = list(decision.get("evidence", []) or [])
+            key_evidence = [
+                item for item in evidence
+                if item.get("category") in {"hazard", "uncertainty"} and float(item.get("score_delta") or 0) > 0
+            ]
+            key_evidence = sorted(key_evidence, key=lambda item: float(item.get("score_delta") or 0), reverse=True)
+            row['Ключевые причины DSS'] = "; ".join(
+                str(item.get("label") or item.get("rationale") or item.get("source"))
+                for item in key_evidence[:3]
+            )
+            row['Конфликты DSS'] = "; ".join(
+                str(item.get("message") or item.get("code"))
+                for item in (decision.get("conflicts", []) or [])
+            )
             row["Метка надёжности"] = analysis["reliability"].get("final_label", "")
             row["Сводный балл надёжности"] = analysis["reliability"].get("final_score", "")
 
@@ -393,6 +443,11 @@ class MainWindow(QMainWindow):
         self.svr = None
         self.tox = None
         self.pesticide_class = None
+        self.bioactivity_ec50 = None
+        self.bioactivity_lc50 = None
+        self.bioactivity_ld50 = None
+        self.bioactivity_ec50_regression = None
+        self.bioactivity_ld50_regression = None
         self._logger.info("MainWindow __init__ step: predictor factory ready")
         self.decision_support = DecisionSupport("config/decision_rules.json")
         self._logger.info("MainWindow __init__ step: decision support ready")
@@ -427,16 +482,12 @@ class MainWindow(QMainWindow):
         self.btn_import = QPushButton("Импорт CSV/XLSX")
         self.btn_export = QPushButton("Экспорт PDF")
         self.btn_export.setEnabled(False)
-        self.btn_load_chemdraw = QPushButton("Загрузить CDX/CDXML")
         self.btn_clear_ra_cache = QPushButton("Очистить кэш аналогов")
-
-        self.btn_load_chemdraw.clicked.connect(self.on_load_chemdraw)
 
         top.addWidget(QLabel("Ввод:"))
         top.addWidget(self.input_edit, 1)
         top.addWidget(self.type_combo)
         top.addWidget(self.btn_import)
-        top.addWidget(self.btn_load_chemdraw)
         top.addWidget(self.btn_generate)
         top.addWidget(self.btn_export)
         top.addWidget(self.btn_clear_ra_cache)
@@ -494,6 +545,10 @@ class MainWindow(QMainWindow):
         self.reliability_text = QTextEdit()
         self.reliability_text.setReadOnly(True)
         self.tabs.addTab(self.reliability_text, "Надёжность")
+
+        self.applicability_text = QTextEdit()
+        self.applicability_text.setReadOnly(True)
+        self.tabs.addTab(self.applicability_text, "Область применимости")
 
         self.analogues_text = QTextEdit()
         self.analogues_text.setReadOnly(True)
@@ -577,8 +632,9 @@ class MainWindow(QMainWindow):
 
         view_layout.addWidget(svg_card, 1)
         self.left_tabs.addTab(view_wrap, "Просмотр")
-        self.left_tabs.setCurrentIndex(self._view_tab_index)
+        self.left_tabs.setCurrentIndex(self._draw_tab_index)
         self.left_tabs.currentChanged.connect(self._on_left_tab_changed)
+        QTimer.singleShot(250, self._ensure_sketcher_ready)
         # self.devtools = QWebEngineView(self)
         # self.web.page().setDevToolsPage(self.devtools.page())
         # self.devtools.show()
@@ -629,6 +685,41 @@ class MainWindow(QMainWindow):
             self._logger.info("Predictor ready: pesticide_class -> %s", type(self.pesticide_class).__name__)
         return self.pesticide_class
 
+    def _get_bioactivity_ec50_predictor(self):
+        if self.bioactivity_ec50 is None:
+            self._logger.info("Loading predictor: bioactivity_ec50_aquatic_binary")
+            self.bioactivity_ec50 = self.factory.create("bioactivity_ec50_aquatic_binary")
+            self._logger.info("Predictor ready: bioactivity_ec50_aquatic_binary -> %s", type(self.bioactivity_ec50).__name__)
+        return self.bioactivity_ec50
+
+    def _get_bioactivity_lc50_predictor(self):
+        if self.bioactivity_lc50 is None:
+            self._logger.info("Loading predictor: bioactivity_lc50_fish_binary")
+            self.bioactivity_lc50 = self.factory.create("bioactivity_lc50_fish_binary")
+            self._logger.info("Predictor ready: bioactivity_lc50_fish_binary -> %s", type(self.bioactivity_lc50).__name__)
+        return self.bioactivity_lc50
+
+    def _get_bioactivity_ld50_predictor(self):
+        if self.bioactivity_ld50 is None:
+            self._logger.info("Loading predictor: bioactivity_ld50_mammals_oral_binary")
+            self.bioactivity_ld50 = self.factory.create("bioactivity_ld50_mammals_oral_binary")
+            self._logger.info("Predictor ready: bioactivity_ld50_mammals_oral_binary -> %s", type(self.bioactivity_ld50).__name__)
+        return self.bioactivity_ld50
+
+    def _get_bioactivity_ec50_regression_predictor(self):
+        if self.bioactivity_ec50_regression is None:
+            self._logger.info("Loading predictor: bioactivity_ec50_aquatic_regression")
+            self.bioactivity_ec50_regression = self.factory.create("bioactivity_ec50_aquatic_regression")
+            self._logger.info("Predictor ready: bioactivity_ec50_aquatic_regression -> %s", type(self.bioactivity_ec50_regression).__name__)
+        return self.bioactivity_ec50_regression
+
+    def _get_bioactivity_ld50_regression_predictor(self):
+        if self.bioactivity_ld50_regression is None:
+            self._logger.info("Loading predictor: bioactivity_ld50_mammals_oral_regression")
+            self.bioactivity_ld50_regression = self.factory.create("bioactivity_ld50_mammals_oral_regression")
+            self._logger.info("Predictor ready: bioactivity_ld50_mammals_oral_regression -> %s", type(self.bioactivity_ld50_regression).__name__)
+        return self.bioactivity_ld50_regression
+
     def _build_workflow(self) -> DSSWorkflow:
         self._logger.info("Building DSS workflow.")
         return DSSWorkflow(
@@ -639,6 +730,31 @@ class MainWindow(QMainWindow):
                     task="Pesticide Class",
                     predictor=self._get_pesticide_class_predictor(),
                     coverage_name="Class",
+                ),
+                PredictorSpec(
+                    task="Биоактивность: EC50, водные беспозвоночные",
+                    predictor=self._get_bioactivity_ec50_predictor(),
+                    coverage_name="BioEC50",
+                ),
+                PredictorSpec(
+                    task="Биоактивность: LC50, рыбы",
+                    predictor=self._get_bioactivity_lc50_predictor(),
+                    coverage_name="BioLC50",
+                ),
+                PredictorSpec(
+                    task="Биоактивность: LD50, млекопитающие перорально",
+                    predictor=self._get_bioactivity_ld50_predictor(),
+                    coverage_name="BioLD50",
+                ),
+                PredictorSpec(
+                    task="Биоактивность: EC50 регрессия",
+                    predictor=self._get_bioactivity_ec50_regression_predictor(),
+                    coverage_name="BioEC50Reg",
+                ),
+                PredictorSpec(
+                    task="Биоактивность: LD50 регрессия",
+                    predictor=self._get_bioactivity_ld50_regression_predictor(),
+                    coverage_name="BioLD50Reg",
                 ),
             ],
             decision_support=self.decision_support,
@@ -743,6 +859,11 @@ class MainWindow(QMainWindow):
                 "SVR": self._get_logp_predictor(),
                 "Tox": self._get_tox_predictor(),
                 "Class": self._get_pesticide_class_predictor(),
+                "BioEC50": self._get_bioactivity_ec50_predictor(),
+                "BioLC50": self._get_bioactivity_lc50_predictor(),
+                "BioLD50": self._get_bioactivity_ld50_predictor(),
+                "BioEC50Reg": self._get_bioactivity_ec50_regression_predictor(),
+                "BioLD50Reg": self._get_bioactivity_ld50_regression_predictor(),
             },
             decision_support=self.decision_support,
             read_across=self.read_across,
@@ -853,63 +974,111 @@ class MainWindow(QMainWindow):
         if not decision:
             return "Сводка по DSS недоступна."
 
-        analysis = analysis or {}
+        def fmt_num(value):
+            try:
+                return f"{float(value):.3f}"
+            except Exception:
+                return "-" if value in (None, "") else str(value)
 
-        tox_meta = (decision.get("meta", {}) or {}).get("toxicity", {}) or {}
-        tox_prob = tox_meta.get("prob_toxic")
-        tox_threshold = tox_meta.get("threshold")
-        tox_decision = tox_meta.get("decision")
-        tox_line = "-"
-        if tox_prob is not None and tox_threshold is not None:
-            tox_line = (
-                f"P(токсичности)={float(tox_prob):.3f}, "
-                f"порог={float(tox_threshold):.3f}, "
-                f"решение={'токсично' if tox_decision else 'нетоксично'}"
+        def status_ru(value):
+            return {
+                "approve": "Одобрить",
+                "review": "Проверить вручную",
+                "reject": "Отклонить",
+                "insufficient_data": "Недостаточно данных",
+            }.get(str(value), str(value) if value is not None else "-")
+
+        def risk_ru(value):
+            return {
+                "low": "Низкий",
+                "medium": "Средний",
+                "high": "Высокий",
+                "critical": "Критический",
+            }.get(str(value), str(value) if value is not None else "-")
+
+        def positive_items(kind: str) -> list[dict]:
+            return sorted(
+                [
+                    item for item in (decision.get("evidence", []) or [])
+                    if item.get("category") == kind and float(item.get("score_delta") or 0) > 0
+                ],
+                key=lambda item: float(item.get("score_delta") or 0),
+                reverse=True,
             )
-        elif tox_prob is not None:
-            tox_line = f"P(токсичности)={float(tox_prob):.3f}"
 
-        rationale = "\n".join([f"- {x}" for x in decision.get("rationale", [])]) or "-"
-        actions = "\n".join([f"- {x}" for x in decision.get("next_actions", [])]) or "-"
-        read_across_targets = (analysis.get("read_across", {}) or {}).get("targets", {}) or {}
-        analogue_lines: list[str] = []
-        if read_across_targets:
-            for target_key, target_data in read_across_targets.items():
-                prediction = target_data.get("prediction") or {}
-                target_analogues = target_data.get("analogues", []) or []
-                if prediction:
-                    analogue_lines.append(
-                        f"- {target_data.get('label_ru', target_key)}: "
-                        f"{prediction.get('value', '-')}"
-                        f" ({prediction.get('confidence', '-')})"
-                    )
-                elif target_analogues:
-                    best = target_analogues[0]
-                    analogue_lines.append(
-                        f"- {target_data.get('label_ru', target_key)}: "
-                        f"есть только слабые аналоги; лучший sim={best.get('similarity', '-')}"
-                    )
-                else:
-                    analogue_lines.append(
-                        f"- {target_data.get('label_ru', target_key)}: подходящие аналоги не найдены."
-                    )
-        else:
-            analogue_lines.append("- Метод аналогов не дал результатов.")
+        def render_evidence(title: str, items: list[dict]) -> list[str]:
+            lines = [f"{title}:"]
+            if not items:
+                lines.append("-")
+                return lines
+            for item in items[:5]:
+                label = item.get("label") or item.get("source") or "Фактор"
+                source = item.get("source") or "-"
+                delta = fmt_num(item.get("score_delta"))
+                value = item.get("value")
+                value_part = f"; значение={value}" if value not in (None, "") else ""
+                rationale = item.get("rationale") or ""
+                lines.append(f"- {label} ({source}{value_part}; вклад={delta}). {rationale}".strip())
+            return lines
 
-        analogue_block = "\n".join(analogue_lines)
-        primary_category = (analysis.get("category", {}) or {}).get("summary_ru", "-")
-        return (
-            f"Версия правил: {decision.get('rule_version', '-')}\n"
-            f"Статус решения: {_localize_decision_status(decision.get('decision_status', '-'))}\n"
-            f"Уровень риска: {_localize_risk_level(decision.get('risk_level', '-'))}\n"
-            f"Сводный балл: {decision.get('score', '-')}\n"
-            f"Основание по токсичности: {tox_line}\n"
-            f"Аналоговая поддержка:\n{analogue_block}\n"
-            f"Сводка по аналогам: {primary_category}\n"
-            f"Рекомендация: {decision.get('recommendation', '-')}\n\n"
-            f"Обоснование:\n{rationale}\n\n"
-            f"Следующие действия:\n{actions}"
-        )
+        component_names = {
+            "toxicity": "токсичность",
+            "bioactivity": "биоактивность EC50/LC50/LD50",
+            "physchem": "LogP/TPSA",
+            "read_across": "read-across",
+            "domain": "область применимости",
+            "reliability": "надёжность",
+            "conflict": "конфликты",
+            "data_completeness": "полнота данных",
+        }
+        component_lines = [
+            f"- {component_names.get(key, key)}: {fmt_num(value)}"
+            for key, value in (decision.get("component_scores", {}) or {}).items()
+            if value
+        ]
+
+        conflict_lines = [
+            f"- {item.get('message', item.get('code', 'конфликт'))}"
+            for item in (decision.get("conflicts", []) or [])
+        ] or ["-"]
+        flag_lines = [
+            f"- {item.get('message', item.get('code', 'флаг качества'))}"
+            for item in (decision.get("data_quality_flags", []) or [])
+        ] or ["-"]
+        rationale_lines = [f"- {item}" for item in decision.get("rationale", [])] or ["-"]
+        action_lines = [f"- {item}" for item in decision.get("next_actions", [])] or ["-"]
+
+        lines = [
+            f"Версия правил: {decision.get('rule_version', '-')}",
+            "Роль DSS: скрининг и объяснение риска, не финальное регуляторное заключение.",
+            f"Статус решения: {status_ru(decision.get('decision_status', '-'))}",
+            f"Уровень риска: {risk_ru(decision.get('risk_level', '-'))}",
+            f"Сводный балл: {fmt_num(decision.get('score'))}",
+            f"Балл опасности: {fmt_num(decision.get('hazard_score'))}",
+            f"Балл неопределённости: {fmt_num(decision.get('uncertainty_score'))}",
+            "",
+            "Вклад компонентов:",
+            *(component_lines or ["-"]),
+            "",
+            *render_evidence("Ключевые факторы риска", positive_items("hazard")),
+            "",
+            *render_evidence("Факторы неопределённости", positive_items("uncertainty")),
+            "",
+            "Конфликты:",
+            *conflict_lines,
+            "",
+            "Флаги качества данных:",
+            *flag_lines,
+            "",
+            f"Рекомендация: {decision.get('recommendation', '-')}",
+            "",
+            "Обоснование:",
+            *rationale_lines,
+            "",
+            "Следующие действия:",
+            *action_lines,
+        ]
+        return "\n".join(lines)
 
     def _render_profile_text(self, profile: dict) -> str:
         lines = list(profile.get("summary_ru", []) or [])
@@ -929,6 +1098,66 @@ class MainWindow(QMainWindow):
             f"Уверенность моделей: {reliability.get('model_confidence', '-')}\n\n"
             f"{reliability.get('summary_ru', '-')}"
         )
+
+    def _render_applicability_domain_text(self, ad: dict) -> str:
+        if not ad:
+            return "Оценка области применимости недоступна."
+
+        lines = [
+            f"Сводный статус: {ad.get('overall_status_ru', '-')}",
+            f"Средний AD score: {ad.get('mean_ad_score', '-')}",
+            "",
+            ad.get("summary_ru", "-"),
+            "",
+            "Детализация по моделям:",
+        ]
+
+        for item in ad.get("items", []) or []:
+            lines.extend([
+                "",
+                f"Модель: {item.get('task', '-')}",
+                f"Статус: {item.get('status_ru', item.get('status', '-'))}",
+                f"AD score: {item.get('ad_score', '-')}",
+                f"Метод: {item.get('method', '-')}",
+                f"Причина: {item.get('reason', '-')}",
+            ])
+            distance = item.get("distance") or {}
+            if distance:
+                lines.append(
+                    "kNN: "
+                    f"distance={distance.get('distance', '-')}; "
+                    f"threshold={distance.get('threshold', '-')}; "
+                    f"ratio={distance.get('ratio', '-')}"
+                )
+            similarity = item.get("similarity") or {}
+            if similarity.get("top_similarity") is not None:
+                lines.append(f"Ближайший Tanimoto analogue: {similarity.get('top_similarity')}")
+            if "scaffold_in_reference" in item:
+                lines.append(f"Scaffold в train: {'да' if item.get('scaffold_in_reference') else 'нет'}")
+
+            descriptor_flags = item.get("descriptor_flags") or []
+            if descriptor_flags:
+                lines.append("Descriptor flags:")
+                for flag in descriptor_flags[:5]:
+                    lines.append(f"- {flag.get('message', flag.get('code', '-'))}")
+
+            flags = item.get("flags") or []
+            if flags:
+                lines.append("Molecular flags:")
+                for flag in flags[:5]:
+                    lines.append(f"- {flag.get('message', flag.get('code', '-'))}")
+
+            nearest = item.get("nearest") or []
+            if nearest:
+                lines.append("Ближайшие обучающие молекулы:")
+                for analogue in nearest[:3]:
+                    lines.append(
+                        f"- sim={analogue.get('similarity', '-')}; "
+                        f"label={analogue.get('label', '-')}; "
+                        f"SMILES={analogue.get('smiles', '-')}"
+                    )
+
+        return "\n".join(str(line) for line in lines)
 
     def _render_analogues_html(self, category: dict, read_across: dict) -> str:
         summary = escape((category or {}).get("summary_ru", "Сводка по аналогам недоступна."))
@@ -1104,6 +1333,7 @@ class MainWindow(QMainWindow):
         self.decision_text.setPlainText(self._render_decision_text(analysis["decision"], analysis))
         self.profile_text.setPlainText(self._render_profile_text(analysis["profile"]))
         self.reliability_text.setPlainText(self._render_reliability_text(analysis["reliability"]))
+        self.applicability_text.setPlainText(self._render_applicability_domain_text(analysis.get("applicability_domain", {})))
         self.analogues_text.setHtml(
             self._render_analogues_html(
                 analysis["category"],
@@ -1121,6 +1351,179 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(0)
 
 
+    def _export_html_pdf_fallback(self, html: str, out_path: str) -> None:
+        """Render PDF fallback through Qt WebEngine.
+
+        QTextDocument keeps only a small subset of HTML/CSS and drops SVG in
+        practice, which made reports look like plain text. WebEngine uses the
+        same renderer as the sketcher tab, so tables, pastel highlights and
+        inline SVG structures survive even when reportlab is not installed.
+        """
+        from PySide6.QtGui import QPageLayout, QPageSize
+        from PySide6.QtWebEngineCore import QWebEnginePage
+
+        page = QWebEnginePage(self)
+        loop = QEventLoop()
+        state = {"done": False, "ok": False, "error": ""}
+
+        is_batch = ("приоритизационный" in html) or ("Пакет" in html) or ("Batch" in html)
+        orientation = QPageLayout.Landscape if is_batch else QPageLayout.Portrait
+        layout = QPageLayout(
+            QPageSize(QPageSize.A4),
+            orientation,
+            QMarginsF(10.0, 10.0, 10.0, 10.0),
+            QPageLayout.Millimeter,
+        )
+
+        def finish(ok: bool, error: str = ""):
+            if state["done"]:
+                return
+            state["done"] = True
+            state["ok"] = bool(ok)
+            state["error"] = error
+            loop.quit()
+
+        def on_pdf_finished(path: str, success: bool):
+            finish(success, "" if success else f"Qt WebEngine не смог записать PDF: {path}")
+
+        def on_loaded(ok: bool):
+            if not ok:
+                finish(False, "Qt WebEngine не смог загрузить HTML отчёта.")
+                return
+            page.pdfPrintingFinished.connect(on_pdf_finished)
+            page.printToPdf(out_path, layout)
+
+        page.loadFinished.connect(on_loaded)
+        QTimer.singleShot(60000, lambda: finish(False, "Таймаут PDF-экспорта через Qt WebEngine."))
+        page.setHtml(html, QUrl.fromLocalFile(BASE_DIR + os.sep))
+        loop.exec()
+        page.deleteLater()
+
+        if not state["ok"]:
+            raise RuntimeError(state["error"] or "Неизвестная ошибка PDF-экспорта через Qt WebEngine.")
+
+    def _batch_html_for_pdf_fallback(self, df, title: str) -> str:
+        def esc_html(value):
+            return escape("" if value is None else str(value))
+
+        def find_col(candidates):
+            raw = {str(col).strip().lower(): col for col in df.columns}
+            for candidate in candidates:
+                key = candidate.strip().lower()
+                if key in raw:
+                    return raw[key]
+            for col in df.columns:
+                name = str(col).strip().lower()
+                for candidate in candidates:
+                    if candidate.strip().lower() in name:
+                        return col
+            return None
+
+        def status_rank(value):
+            text = str(value or "").strip().lower()
+            if "approve" in text or "одобр" in text:
+                return 0
+            if "review" in text or "провер" in text:
+                return 1
+            if "reject" in text or "отклон" in text:
+                return 2
+            if "insufficient" in text or "недостат" in text:
+                return 3
+            return 4
+
+        def badge_class(value):
+            text = str(value or "").strip().lower()
+            if "approve" in text or "одобр" in text or "низ" in text:
+                return "ok"
+            if "review" in text or "провер" in text or "сред" in text:
+                return "warn"
+            if "reject" in text or "отклон" in text or "выс" in text or "крит" in text:
+                return "bad"
+            if "insufficient" in text or "недостат" in text:
+                return "info"
+            return "neutral"
+
+        status_col = find_col(["Статус решения", "decision_status", "DSS"])
+        risk_col = find_col(["Уровень риска", "risk_level", "Риск"])
+        hazard_col = find_col(["Балл опасности DSS", "hazard_score", "Опасность"])
+        uncertainty_col = find_col(["Балл неопределённости DSS", "uncertainty_score", "Неопределённость"])
+        reason_col = find_col(["Ключевые причины DSS", "Главная причина", "reason"])
+        ad_status_col = find_col(["AD-статус", "AD status", "applicability domain"])
+        ad_score_col = find_col(["AD-score", "AD score", "mean_ad_score"])
+        reliability_col = find_col(["Метка надёжности", "reliability", "Надёжность"])
+        smiles_col = find_col(["SMILES", "smiles", "input", "Молекула"])
+
+        work = df.copy()
+        if status_col:
+            work["_sort_status"] = work[status_col].map(status_rank)
+            work["_sort_unc"] = work[uncertainty_col].map(lambda x: float(x) if isinstance(x, (int, float)) else 999.0) if uncertainty_col else 999.0
+            work["_sort_haz"] = work[hazard_col].map(lambda x: float(x) if isinstance(x, (int, float)) else 999.0) if hazard_col else 999.0
+            work = work.sort_values(["_sort_status", "_sort_unc", "_sort_haz"], kind="stable").drop(columns=["_sort_status", "_sort_unc", "_sort_haz"], errors="ignore")
+
+        max_rows = min(len(work), 120)
+        counts = {}
+        if status_col:
+            for value in work[status_col]:
+                counts[str(value)] = counts.get(str(value), 0) + 1
+
+        cards = "".join(
+            f"<div class='card'><div class='muted'>{esc_html(label)}</div><b>{count}</b></div>"
+            for label, count in counts.items()
+        ) or "<div class='muted'>Статусы DSS недоступны.</div>"
+
+        rows = []
+        for _, row in work.head(max_rows).iterrows():
+            status = row[status_col] if status_col else ""
+            risk = row[risk_col] if risk_col else ""
+            rows.append(
+                "<tr>"
+                f"<td class='mono'>{esc_html(row[smiles_col] if smiles_col else '')}</td>"
+                f"<td><span class='badge {badge_class(status)}'>{esc_html(status)}</span></td>"
+                f"<td><span class='badge {badge_class(risk)}'>{esc_html(risk)}</span></td>"
+                f"<td>{esc_html(row[hazard_col] if hazard_col else '')}</td>"
+                f"<td>{esc_html(row[uncertainty_col] if uncertainty_col else '')}</td>"
+                f"<td><span class='badge {badge_class(row[ad_status_col] if ad_status_col else '')}'>{esc_html(row[ad_status_col] if ad_status_col else '')}</span></td>"
+                f"<td>{esc_html(row[ad_score_col] if ad_score_col else '')}</td>"
+                f"<td>{esc_html(row[reason_col] if reason_col else '')}</td>"
+                f"<td>{esc_html(row[reliability_col] if reliability_col else '')}</td>"
+                "</tr>"
+            )
+        note = "" if len(work) <= max_rows else f"<p class='muted'>В PDF показаны первые {max_rows} строк после сортировки. Полная таблица остаётся в CSV/XLSX.</p>"
+        return f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<style>
+body {{ font-family: Segoe UI, Arial, sans-serif; font-size: 9pt; color: #20242A; }}
+h1 {{ font-size: 17pt; margin-bottom: 2px; }}
+.muted {{ color: #68717C; font-size: 8.5pt; }}
+.summary {{ display: flex; gap: 8px; margin: 10px 0; }}
+.card {{ border: 1px solid #DDE3EA; background: #F7F9FB; padding: 7px 9px; border-radius: 6px; }}
+table {{ width: 100%; border-collapse: collapse; }}
+th, td {{ border: 1px solid #D0D7DE; padding: 4px; vertical-align: top; }}
+th {{ background: #EEF3F7; text-align: left; }}
+.badge {{ border-radius: 5px; padding: 3px 6px; font-weight: 600; }}
+.ok {{ background: #DDEFD8; color: #2F5C3B; }}
+.warn {{ background: #F7E7BE; color: #755B16; }}
+.bad {{ background: #F3D2D2; color: #7A3030; }}
+.info {{ background: #DCE7F3; color: #2C4D6B; }}
+.neutral {{ background: #ECEFF3; color: #3E4852; }}
+.mono {{ font-family: Consolas, monospace; overflow-wrap: anywhere; }}
+</style>
+</head>
+<body>
+<h1>{esc_html(title)}</h1>
+<p class="muted">Сформирован: {datetime.now().isoformat(timespec='seconds')} | Молекул: {len(work)}</p>
+<p class="muted">Сортировка: Approve → Review → Reject → Insufficient data; внутри Approve выше молекулы с меньшей неопределённостью.</p>
+<div class="summary">{cards}</div>
+{note}
+<table>
+<thead><tr><th>Молекула</th><th>DSS</th><th>Риск</th><th>Опасность</th><th>Неопределённость</th><th>AD</th><th>AD score</th><th>Главная причина</th><th>Надёжность</th></tr></thead>
+<tbody>{''.join(rows)}</tbody>
+</table>
+</body>
+</html>"""
+
     def on_export(self):
         if not self._last_payload:
             QMessageBox.warning(self, "Нет данных для экспорта", "Сначала сформируйте отчёт.")
@@ -1133,14 +1536,24 @@ class MainWindow(QMainWindow):
 
         try:
             render_report_pdf(self._last_payload, out_path)
+        except ModuleNotFoundError as e:
+            if e.name != "reportlab":
+                self._logger.exception("PDF export failed: %s", out_path)
+                QMessageBox.critical(self, "Ошибка экспорта", f"{type(e).__name__}: {e}")
+                return
+            self._logger.warning("reportlab is unavailable; using Qt HTML PDF fallback.")
+            try:
+                self._export_html_pdf_fallback(render_report_html(self._last_payload), out_path)
+            except Exception as fallback_exc:
+                self._logger.exception("PDF fallback export failed: %s", out_path)
+                QMessageBox.critical(self, "Ошибка экспорта", f"{type(fallback_exc).__name__}: {fallback_exc}")
+                return
         except Exception as e:
             self._logger.exception("PDF export failed: %s", out_path)
             QMessageBox.critical(self, "Ошибка экспорта", f"{type(e).__name__}: {e}")
             return
         self._logger.info("PDF export completed: %s", out_path)
-
         QMessageBox.information(self, "Экспорт завершён", f"Сохранено:\n{out_path}")
-
 
     def _show_df_in_table(self, df, table: QTableWidget, max_rows: int = 500):
         # ограничим количество строк, чтобы UI не тормозил
@@ -1194,14 +1607,26 @@ class MainWindow(QMainWindow):
         if not out_path:
             return
 
+        batch_title = "Пакетный химический отчёт"
         try:
-            render_batch_table_pdf(self._batch_df, out_path, title="Пакетный химический отчёт")
+            render_batch_table_pdf(self._batch_df, out_path, title=batch_title)
+        except ModuleNotFoundError as e:
+            if e.name != "reportlab":
+                self._logger.exception("Batch PDF export failed: %s", out_path)
+                QMessageBox.critical(self, "Ошибка экспорта", f"{type(e).__name__}: {e}")
+                return
+            self._logger.warning("reportlab is unavailable; using Qt HTML batch PDF fallback.")
+            try:
+                self._export_html_pdf_fallback(self._batch_html_for_pdf_fallback(self._batch_df, batch_title), out_path)
+            except Exception as fallback_exc:
+                self._logger.exception("Batch PDF fallback export failed: %s", out_path)
+                QMessageBox.critical(self, "Ошибка экспорта", f"{type(fallback_exc).__name__}: {fallback_exc}")
+                return
         except Exception as e:
             self._logger.exception("Batch PDF export failed: %s", out_path)
             QMessageBox.critical(self, "Ошибка экспорта", f"{type(e).__name__}: {e}")
             return
         self._logger.info("Batch PDF export completed: %s", out_path)
-
         QMessageBox.information(self, "Экспорт завершён", f"Сохранено:\n{out_path}")
     def on_batch_row_double_clicked(self, row: int, col: int):
         if getattr(self, "_batch_df", None) is None:
@@ -1241,35 +1666,6 @@ class MainWindow(QMainWindow):
 
             if hasattr(self, "_batch_thread"):
                 self._batch_thread.requestInterruption()
-
-    def on_load_chemdraw(self):
-        self._logger.info("ChemDraw import requested.")
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Загрузить ChemDraw (CDX/CDXML)",
-            "",
-            "Файлы ChemDraw (*.cdx *.cdxml)"
-        )
-        if not path:
-            return
-        self._logger.info("ChemDraw file selected: %s", path)
-
-        try:
-            mol = mol_from_chemdraw(path)
-            smiles = Chem.MolToSmiles(mol, isomericSmiles=True)
-        except ChemDrawImportError as e:
-            self._logger.error("ChemDraw import failed: %s", e)
-            QMessageBox.critical(self, "Ошибка импорта ChemDraw", str(e))
-            return
-        except Exception as e:
-            self._logger.exception("ChemDraw import failed unexpectedly.")
-            QMessageBox.critical(self, "Ошибка импорта ChemDraw", f"{type(e).__name__}: {e}")
-            return
-
-        # запускаем тот же pipeline, что и ручной ввод SMILES
-        self.input_edit.setText(smiles)
-        self.type_combo.setCurrentText("SMILES")
-        self.on_generate()
 
 def main():
     prepare_gui_environment()
@@ -1348,3 +1744,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+

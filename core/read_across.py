@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional
 
 from rdkit import Chem, DataStructs
-from rdkit.Chem import AllChem
+from rdkit.Chem import rdFingerprintGenerator
 
 from core.logging_utils import configure_logging, get_logger
 from core.read_across_sqlite import DEFAULT_CATEGORY_TABLE, DEFAULT_TARGET_TABLES, fetch_table_rows
@@ -114,6 +114,10 @@ class ReadAcrossService:
         self.config_path = config_path
         self.config = self._load_config(config_path)
         self.cache_file = app_cache_path(self.config.cache_file)
+        self._fingerprint_generator = rdFingerprintGenerator.GetMorganGenerator(
+            radius=int(self.config.fingerprint_radius),
+            fpSize=int(self.config.fingerprint_bits),
+        )
 
         self._loaded = False
         self._targets: dict[str, dict[str, Any]] = {}
@@ -149,11 +153,7 @@ class ReadAcrossService:
                 "warnings": list(self._warnings) + [warning],
             }
 
-        query_fp = AllChem.GetMorganFingerprintAsBitVect(
-            mol,
-            self.config.fingerprint_radius,
-            nBits=self.config.fingerprint_bits,
-        )
+        query_fp = self._fingerprint_generator.GetFingerprint(mol)
 
         target_results: dict[str, dict[str, Any]] = {}
         prediction_rows: list[dict[str, Any]] = []
@@ -543,11 +543,7 @@ class ReadAcrossService:
                 if mol is None:
                     continue
 
-                fp = AllChem.GetMorganFingerprintAsBitVect(
-                    mol,
-                    self.config.fingerprint_radius,
-                    nBits=self.config.fingerprint_bits,
-                )
+                fp = self._fingerprint_generator.GetFingerprint(mol)
                 entry = {
                     "smiles": canonical,
                     "class_name": category_map.get(canonical, ""),

@@ -4,6 +4,7 @@ from typing import Any, Dict
 from core.model_registry import ModelRegistry
 from core.predictor import SVRPredictor, SVRPaths
 from core.tox_predictor import ToxPredictor, ToxPaths
+from core.bioactivity_predictor import BioactivityBinaryPredictor, BioactivityPaths, BioactivityRegressionPredictor, BioactivityRegressionPaths
 from core.utils import resource_path
 
 
@@ -68,6 +69,30 @@ class PredictorFactory:
                 paths=ToxPaths(
                     pipeline_pkl=f"{models_dir}/{pipeline_pkl}",
                     meta_json=f"{models_dir}/{meta_json}",
+                )
+            )
+
+        if t == "bioactivity_binary":
+            pipeline_pkl = cfg.get("pipeline_pkl")
+            meta_json = cfg.get("meta_json")
+            if not pipeline_pkl or not meta_json:
+                raise ValueError(f"Bioactivity model assets are not configured for task '{task_key}'")
+            return BioactivityBinaryPredictor(
+                paths=BioactivityPaths(
+                    pipeline_pkl=f"{models_dir}/{pipeline_pkl}",
+                    meta_json=f"{models_dir}/{meta_json}",
+                )
+            )
+
+        if t == "bioactivity_regression":
+            artifact_joblib = cfg.get("artifact_joblib")
+            regression_task_key = cfg.get("task_key")
+            if not artifact_joblib or not regression_task_key:
+                raise ValueError(f"Bioactivity regression assets are not configured for task '{task_key}'")
+            return BioactivityRegressionPredictor(
+                paths=BioactivityRegressionPaths(
+                    artifact_joblib=f"{models_dir}/{artifact_joblib}",
+                    task_key=regression_task_key,
                 )
             )
 

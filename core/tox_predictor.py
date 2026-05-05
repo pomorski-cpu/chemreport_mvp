@@ -42,6 +42,7 @@ class ToxPredictor:
 
     def _load_assets(self) -> None:
         self.model = joblib.load(resource_path(self._paths.pipeline_pkl))
+        self._force_single_thread(self.model)
 
         with open(resource_path(self._paths.meta_json), "r", encoding="utf-8-sig") as f:
             self.meta = json.load(f)
@@ -55,6 +56,15 @@ class ToxPredictor:
         )
         self.toxic_class_id = self._resolve_toxic_class_id()
         self.non_toxic_class_id = self._resolve_non_toxic_class_id()
+
+    def _force_single_thread(self, model: Any) -> None:
+        if hasattr(model, "n_jobs"):
+            try:
+                model.n_jobs = 1
+            except Exception:
+                pass
+        for _, step in getattr(model, "steps", []) or []:
+            self._force_single_thread(step)
 
     def _normalize_label(self, cls_id: int) -> str:
         return str(self.class_names.get(str(cls_id), self.class_names.get(cls_id, str(cls_id))))
@@ -110,10 +120,86 @@ class ToxPredictor:
             return "Средняя", pairwise_score
         return "Низкая", pairwise_score
 
+    def _is_multilabel_task(self) -> bool:
+        return str(self.meta.get("task_type", "")).lower() == "multilabel_classification"
+
+    def _multilabel_probabilities(self, Xdf) -> list[float]:
+        if hasattr(self.model, "predict_proba"):
+            raw = self.model.predict_proba(Xdf)
+            if hasattr(raw, "tolist"):
+                raw = raw.tolist()
+            if raw and isinstance(raw[0], list):
+                return [float(x) for x in raw[0]]
+            return [float(x) for x in raw]
+
+        raw_pred = self.model.predict(Xdf)
+        if hasattr(raw_pred, "tolist"):
+            raw_pred = raw_pred.tolist()
+        if raw_pred and isinstance(raw_pred[0], list):
+            return [float(x) for x in raw_pred[0]]
+        return [float(x) for x in raw_pred]
+
+    def _predict_multilabel(self, Xdf) -> Dict[str, Any]:
+        labels = list(self.meta.get("labels") or [])
+        if not labels:
+            labels = [self.class_names.get(str(i), str(i)) for i in range(len(self.classes))]
+
+        probs = self._multilabel_probabilities(Xdf)
+        thresholds_map = self.meta.get("label_thresholds") if isinstance(self.meta.get("label_thresholds"), dict) else {}
+        thresholds = [float(thresholds_map.get(label, 0.5)) for label in labels]
+
+        selected_idx = [i for i, prob in enumerate(probs[: len(labels)]) if prob >= thresholds[i]]
+        if not selected_idx and probs:
+            selected_idx = [int(max(range(min(len(labels), len(probs))), key=lambda i: probs[i]))]
+
+        selected_labels = [labels[i] for i in selected_idx]
+        main_labels = [label for label in selected_labels if label != "other"]
+        if main_labels:
+            selected_labels = main_labels
+            selected_idx = [labels.index(label) for label in selected_labels]
+
+        separator = str(self.meta.get("multilabel_separator", "; "))
+        value = separator.join(selected_labels)
+        selected_probs = [probs[i] for i in selected_idx] if selected_idx else []
+        confidence_score = float(sum(selected_probs) / len(selected_probs)) if selected_probs else None
+
+        if confidence_score is None:
+            conf_txt = ""
+        elif confidence_score >= 0.75:
+            conf_txt = "Высокая"
+        elif confidence_score >= 0.55:
+            conf_txt = "Средняя"
+        else:
+            conf_txt = "Низкая"
+
+        selected_bits = [str(label) for label in selected_labels]
+        notes_bits = [
+            "метки: " + (", ".join(selected_bits) if selected_bits else value),
+        ]
+
+        return {
+            "task": self.meta.get("target_name", "Pesticide Class"),
+            "value": value,
+            "confidence": conf_txt,
+            "prob_toxic": None,
+            "toxicity_threshold": None,
+            "toxicity_decision": None,
+            "confidence_score": confidence_score,
+            "ad_distance": None,
+            "ad_threshold": None,
+            "ad_ratio": None,
+            "ad_score": None,
+            "in_domain": None,
+            "notes": "; ".join(notes_bits),
+        }
+
     def predict(self, mol: Chem.Mol, *, features_df=None) -> Dict[str, Any]:
         # 1) features (СЃС‚СЂРѕРіРѕ РІ С‚РѕРј Р¶Рµ РїРѕСЂСЏРґРєРµ)
         Xdf = features_df if features_df is not None else build_feature_df(mol)
         Xdf = Xdf.reindex(columns=self.feature_cols, fill_value=0.0)
+
+        if self._is_multilabel_task():
+            return self._predict_multilabel(Xdf)
 
         # 2) prediction
         y = int(self.model.predict(Xdf)[0])
@@ -161,9 +247,9 @@ class ToxPredictor:
         confidence_score = prob_toxic if prob_toxic is not None else proba
         if prob_toxic is not None and self.toxic_class_id is not None:
             conf_txt = (
-                f"P(toxic)={prob_toxic:.3f}; "
-                f"threshold={self.decision_threshold:.3f}; "
-                f"decision={'toxic' if decision_is_toxic else 'non-toxic'}"
+                f"P(токсичности)={prob_toxic:.3f}; "
+                f"порог={self.decision_threshold:.3f}; "
+                f"решение={'токсично' if decision_is_toxic else 'нетоксично'}"
             )
         elif proba is not None:
             conf_txt, confidence_score = self._class_confidence(proba, second_proba)
@@ -173,12 +259,16 @@ class ToxPredictor:
             selected_prob = class_prob_map.get(int(final_class), proba)
             if selected_prob is not None:
                 notes_bits.append(f"P({label})={selected_prob:.3f}")
-        else:
-            class_one_prob = class_prob_map.get(1)
-            if class_one_prob is not None:
-                notes_bits.append(f"1 vs other={class_one_prob:.3f}")
-            if proba is not None:
-                notes_bits.append(f"top={proba:.3f}")
+        elif class_prob_map:
+            ranked = sorted(class_prob_map.items(), key=lambda item: item[1], reverse=True)
+            top_class, top_prob = ranked[0]
+            top_label = self.class_names.get(str(top_class), self.class_names.get(top_class, str(top_class)))
+            notes_bits.append(f"наиболее вероятный класс: {top_label} (P={top_prob:.3f})")
+            top3 = []
+            for class_id, prob in ranked[:3]:
+                class_label = self.class_names.get(str(class_id), self.class_names.get(class_id, str(class_id)))
+                top3.append(f"{class_label}: {prob:.3f}")
+            notes_bits.append("топ-3 вероятности: " + ", ".join(top3))
         notes = "; ".join(notes_bits)
 
         return {
@@ -196,4 +286,3 @@ class ToxPredictor:
             "in_domain": None,
             "notes": notes,
         }
-

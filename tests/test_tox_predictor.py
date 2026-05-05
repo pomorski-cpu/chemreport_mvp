@@ -50,11 +50,13 @@ def test_non_toxic_classifier_does_not_emit_toxic_confidence():
 
     assert out["value"] == "Прочее"
     assert out["confidence"] == "Высокая"
-    assert "P(toxic)" not in out["confidence"]
+    assert "P(токсичности)" not in out["confidence"]
     assert "P(class=" not in out["confidence"]
     assert out["prob_toxic"] is None
     assert out["confidence_score"] == 0.62 / (0.62 + 0.12)
-    assert out["notes"] == "1 vs other=0.080; top=0.620"
+    assert "наиболее вероятный класс" in out["notes"]
+    assert "топ-3 вероятности" in out["notes"]
+    assert "0.620" in out["notes"]
 
 
 def test_toxicity_notes_show_selected_class_probability():

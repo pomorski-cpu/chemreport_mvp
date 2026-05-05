@@ -15,16 +15,17 @@ from rdkit import Chem
 def read_table(path: str) -> pd.DataFrame:
     """
     Read CSV/XLSX into DataFrame.
-    - CSV: tries default encoding, then utf-8-sig
+    - CSV: tries utf-8-sig first for Windows/Excel-compatible exports,
+      then falls back to default pandas encoding.
     - XLSX/XLS: uses pandas engine (xlsx needs openpyxl installed)
     """
     ext = os.path.splitext(path)[1].lower()
 
     if ext == ".csv":
         try:
-            return pd.read_csv(path)
-        except UnicodeDecodeError:
             return pd.read_csv(path, encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            return pd.read_csv(path)
 
     if ext in (".xlsx", ".xls"):
         return pd.read_excel(path)
@@ -146,7 +147,7 @@ def save_table(df: pd.DataFrame, out_path: str) -> str:
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
     if ext == ".csv":
-        df.to_csv(out_path, index=False, encoding="utf-8")
+        df.to_csv(out_path, index=False, encoding="utf-8-sig")
         return out_path
 
     if ext in (".xlsx", ".xls"):

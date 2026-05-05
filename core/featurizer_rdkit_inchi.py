@@ -6,8 +6,12 @@ import math
 import numpy as np
 import pandas as pd
 
-from rdkit import Chem
-from rdkit.Chem import Descriptors, Crippen, rdMolDescriptors, AllChem, GraphDescriptors, rdPartialCharges
+from rdkit import Chem, DataStructs
+from rdkit.Chem import Descriptors, Crippen, rdMolDescriptors, AllChem, GraphDescriptors, rdPartialCharges, rdFingerprintGenerator
+
+MORGAN_RADIUS = 2
+MORGAN_N_BITS = 2048
+_MORGAN_GENERATOR = rdFingerprintGenerator.GetMorganGenerator(radius=MORGAN_RADIUS, fpSize=MORGAN_N_BITS)
 
 
 # --- SMARTS patterns for functional groups ---
@@ -266,6 +270,12 @@ def _compute_feature_row(mol: Chem.Mol) -> Dict[str, Any]:
 
     # log transforms
     row["log_MW"] = float(math.log(max(row["MolWeight"], 1e-6)))
+
+    bitvect = _MORGAN_GENERATOR.GetFingerprint(mol)
+    arr = np.zeros((MORGAN_N_BITS,), dtype=np.int8)
+    DataStructs.ConvertToNumpyArray(bitvect, arr)
+    for i, bit in enumerate(arr):
+        row[f"morgan_{i:04d}"] = float(bit)
 
     return row
 

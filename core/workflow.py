@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 
 from rdkit import Chem
 
+from core.applicability_domain import ApplicabilityDomainService
 from core.descriptors import compute_basic_descriptors
 from core.featurizer_rdkit_inchi import build_feature_df
 from core.logging_utils import configure_logging, get_logger
@@ -34,6 +35,7 @@ class DSSWorkflow:
         self.predictor_specs = predictor_specs
         self.decision_support = decision_support
         self.read_across = read_across
+        self.applicability_domain = ApplicabilityDomainService()
 
     def analyze_molecule(
         self,
@@ -57,6 +59,7 @@ class DSSWorkflow:
             len(features_df.columns),
         )
         predictions = self._predict_all(mol, features_df, warnings_out)
+        applicability_domain = self._evaluate_applicability_domain(mol, features_df, predictions)
         profile = profile_molecule(mol)
 
         if "." in str(meta.get("smiles", "")):
@@ -99,6 +102,10 @@ class DSSWorkflow:
                 descriptors=descriptors,
                 predictions=predictions,
                 warnings=warnings_out,
+                reliability=reliability,
+                read_across=read_across_payload,
+                category=category,
+                analogues=analogues,
             )
 
         logger.info(
@@ -123,6 +130,7 @@ class DSSWorkflow:
             reliability=reliability,
             svg=svg,
         )
+        payload["applicability_domain"] = applicability_domain
 
         return {
             "meta": meta,
@@ -134,10 +142,46 @@ class DSSWorkflow:
             "category": category,
             "read_across": read_across_payload,
             "reliability": reliability,
+            "applicability_domain": applicability_domain,
             "decision": decision,
             "payload": payload,
             "features_df": features_df,
         }
+
+    def _evaluate_applicability_domain(self, mol: Chem.Mol, features_df, predictions: list[dict[str, Any]]) -> dict[str, Any]:
+        items: list[dict[str, Any]] = []
+        for spec, prediction in zip(self.predictor_specs, predictions):
+            try:
+                item = self.applicability_domain.evaluate_prediction(
+                    mol=mol,
+                    task=spec.task,
+                    predictor=spec.predictor,
+                    prediction=prediction,
+                    features_df=features_df,
+                )
+                self.applicability_domain.apply_to_prediction(prediction, item)
+                items.append(item)
+                logger.info(
+                    "Applicability domain for %s: status=%s score=%s",
+                    spec.task,
+                    item.get("status"),
+                    item.get("ad_score"),
+                )
+            except Exception as exc:
+                logger.exception("Applicability domain failed for %s", spec.task)
+                items.append(
+                    {
+                        "task": spec.task,
+                        "status": "unknown",
+                        "status_ru": "AD неизвестна",
+                        "ad_score": None,
+                        "in_domain": None,
+                        "reason": f"Ошибка AD-оценки: {type(exc).__name__}: {exc}",
+                        "method": "error",
+                        "nearest": [],
+                    }
+                )
+        return self.applicability_domain.summarize(items)
 
     def _predict_all(self, mol: Chem.Mol, features_df, warnings_out: list[str]) -> list[dict[str, Any]]:
         predictions: list[dict[str, Any]] = []

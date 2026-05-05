@@ -44,11 +44,86 @@
     "pesticide_class": {
       "type": "sklearn_pipeline",
       "models_dir": "models",
-      "active": "randomforest_v1",
+      "active": "ppdb_multilabel",
       "versions": {
         "randomforest_v1": {
           "pipeline_pkl": "randomforest_pesticide_pipeline.pkl",
           "meta_json": "randomforest_pesticide_meta.json"
+        },
+        "ppdb_augmented_4class": {
+          "pipeline_pkl": "pesticide_class_ppdb_augmented_4class_pipeline.pkl",
+          "meta_json": "pesticide_class_ppdb_augmented_4class_meta.json"
+        },
+        "ppdb_multilabel": {
+          "pipeline_pkl": "pesticide_class_ppdb_multilabel_pipeline.pkl",
+          "meta_json": "pesticide_class_ppdb_multilabel_meta.json"
+        }
+      }
+    },
+    "bioactivity_ec50_aquatic_binary": {
+      "type": "bioactivity_binary",
+      "models_dir": "models",
+      "active": "v2_rf_no_fp_runtime",
+      "versions": {
+        "v2_rf_runtime": {
+          "pipeline_pkl": "bioactivity_ec50_aquatic_binary_v2_rf.pkl",
+          "meta_json": "bioactivity_ec50_aquatic_binary_v2_rf_meta.json"
+        },
+        "v2_rf_no_fp_runtime": {
+          "pipeline_pkl": "bioactivity_ec50_aquatic_binary_v2_rf_nofp.pkl",
+          "meta_json": "bioactivity_ec50_aquatic_binary_v2_rf_nofp_meta.json"
+        }
+      }
+    },
+    "bioactivity_lc50_fish_binary": {
+      "type": "bioactivity_binary",
+      "models_dir": "models",
+      "active": "v2_rf_no_fp_runtime",
+      "versions": {
+        "v2_rf_runtime": {
+          "pipeline_pkl": "bioactivity_lc50_fish_binary_v2_rf.pkl",
+          "meta_json": "bioactivity_lc50_fish_binary_v2_rf_meta.json"
+        },
+        "v2_rf_no_fp_runtime": {
+          "pipeline_pkl": "bioactivity_lc50_fish_binary_v2_rf_nofp.pkl",
+          "meta_json": "bioactivity_lc50_fish_binary_v2_rf_nofp_meta.json"
+        }
+      }
+    },
+    "bioactivity_ld50_mammals_oral_binary": {
+      "type": "bioactivity_binary",
+      "models_dir": "models",
+      "active": "v2_rf_no_fp_runtime",
+      "versions": {
+        "v2_rf_runtime": {
+          "pipeline_pkl": "bioactivity_ld50_mammals_oral_binary_v2_rf.pkl",
+          "meta_json": "bioactivity_ld50_mammals_oral_binary_v2_rf_meta.json"
+        },
+        "v2_rf_no_fp_runtime": {
+          "pipeline_pkl": "bioactivity_ld50_mammals_oral_binary_v2_rf_nofp.pkl",
+          "meta_json": "bioactivity_ld50_mammals_oral_binary_v2_rf_nofp_meta.json"
+        }
+      }
+    },
+    "bioactivity_ec50_aquatic_regression": {
+      "type": "bioactivity_regression",
+      "models_dir": "models",
+      "active": "universal_consensus_v1",
+      "versions": {
+        "universal_consensus_v1": {
+          "artifact_joblib": "bioactivity_universal_consensus_regression_slim.joblib",
+          "task_key": "ec50_aquatic_invertebrates_acute_48h"
+        }
+      }
+    },
+    "bioactivity_ld50_mammals_oral_regression": {
+      "type": "bioactivity_regression",
+      "models_dir": "models",
+      "active": "universal_consensus_v1",
+      "versions": {
+        "universal_consensus_v1": {
+          "artifact_joblib": "bioactivity_universal_consensus_regression_slim.joblib",
+          "task_key": "ld50_mammals_acute_oral"
         }
       }
     }

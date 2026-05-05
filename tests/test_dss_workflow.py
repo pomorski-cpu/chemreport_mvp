@@ -29,7 +29,7 @@ class BrokenPredictor:
 
 
 class StubDecisionSupport:
-    def evaluate(self, *, meta=None, descriptors=None, predictions=None, warnings=None):
+    def evaluate(self, *, meta=None, descriptors=None, predictions=None, warnings=None, **kwargs):
         return {
             "rule_version": "test",
             "decision_status": "review",
