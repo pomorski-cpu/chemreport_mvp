@@ -1,0 +1,20 @@
+{
+  "exact_match_ad_score": 1.0,
+  "exact_match_promote_to": 0.75,
+  "exact_match_min_model_confidence": 0.55,
+  "similar_high_tanimoto": 0.85,
+  "similar_high_ad_floor": 0.85,
+  "similar_high_promote_to": 0.75,
+  "similar_medium_tanimoto": 0.70,
+  "similar_medium_ad_floor": 0.65,
+  "similar_medium_confidence_cap": 0.70,
+  "borderline_cap": 0.60,
+  "out_of_domain_cap": 0.35,
+  "unknown_cap": 0.55,
+  "in_domain_model_weight": 0.75,
+  "in_domain_ad_weight": 0.25,
+  "ratio_borderline": 1.0,
+  "ratio_out": 1.25,
+  "sim_borderline": 0.45,
+  "sim_out": 0.30
+}

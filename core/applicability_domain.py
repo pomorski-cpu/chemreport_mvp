@@ -10,6 +10,7 @@ from rdkit.Chem import Descriptors, rdFingerprintGenerator
 from rdkit.Chem.Scaffolds import MurckoScaffold
 from sklearn.neighbors import NearestNeighbors
 
+from core.calibration import CalibrationConfig, load_calibration_config
 from core.utils import resource_path
 
 
@@ -19,6 +20,7 @@ class ReferenceBundle:
     X: np.ndarray
     feature_cols: list[str]
     smiles: list[str]
+    canonical_smiles: list[str]
     labels: list[str]
     scaffolds: list[str]
     descriptor_names: list[str]
@@ -40,6 +42,12 @@ def _safe_float(value: Any) -> Optional[float]:
 
 def _canonical_smiles(mol: Chem.Mol) -> str:
     return Chem.MolToSmiles(mol, canonical=True) if mol is not None else ""
+
+
+@lru_cache(maxsize=16384)
+def _canonical_from_smiles(smiles: str) -> str:
+    mol = Chem.MolFromSmiles(str(smiles or ""))
+    return _canonical_smiles(mol) if mol is not None else ""
 
 
 def _murcko(mol: Chem.Mol) -> str:
@@ -74,9 +82,10 @@ class ApplicabilityDomainService:
     with molecular flags instead of pretending that AD is available.
     """
 
-    def __init__(self, *, k: int = 5, threshold_q: float = 0.95):
+    def __init__(self, *, k: int = 5, threshold_q: float = 0.95, calibration: CalibrationConfig | None = None):
         self.k = int(k)
         self.threshold_q = float(threshold_q)
+        self.calibration = calibration or load_calibration_config()
         self._ref_cache: dict[str, ReferenceBundle | None] = {}
 
     def evaluate_prediction(
@@ -91,12 +100,11 @@ class ApplicabilityDomainService:
         task = str(task or prediction.get("task") or "model")
         flags = self._molecular_flags(mol)
 
-        existing = self._existing_ad(task, prediction, flags)
-        if existing is not None:
-            return existing
-
         ref = self._load_reference(predictor)
         if ref is None:
+            existing = self._existing_ad(task, prediction, flags)
+            if existing is not None:
+                return existing
             return {
                 "task": task,
                 "status": "unknown",
@@ -109,8 +117,37 @@ class ApplicabilityDomainService:
                 "nearest": [],
             }
 
+        similarity_info = self._similarity_ad(mol, ref)
+        scaffold = _murcko(mol)
+        scaffold_in_ref = bool(scaffold and scaffold in set(ref.scaffolds))
+        descriptor_flags = self._descriptor_flags(mol, ref)
+        exact_match = self._exact_reference_match(mol, ref, similarity_info)
+        if exact_match is not None:
+            return {
+                "task": task,
+                "status": "in_domain",
+                "status_ru": self._status_ru("in_domain"),
+                "ad_score": self.calibration.exact_match_ad_score,
+                "in_domain": True,
+                "reason": "Молекула найдена в reference/train-наборе этой модели.",
+                "method": "exact_reference_match",
+                "reference_path": ref.path,
+                "reference_size": int(ref.X.shape[0]),
+                "seen_in_reference": True,
+                "match_type": "exact_canonical_smiles",
+                "matched_reference": exact_match,
+                "distance": {},
+                "similarity": similarity_info,
+                "scaffold": scaffold,
+                "scaffold_in_reference": scaffold_in_ref,
+                "descriptor_flags": descriptor_flags,
+                "flags": flags,
+                "nearest": similarity_info.get("nearest", []),
+            }
+
         query_x = self._query_feature_vector(mol, predictor, ref, features_df)
-        if query_x is None:
+        distance_info = self._distance_ad(query_x, ref) if query_x is not None else {}
+        if query_x is None and self._similarity_tier(similarity_info) is None:
             return {
                 "task": task,
                 "status": "unknown",
@@ -121,18 +158,13 @@ class ApplicabilityDomainService:
                 "method": "feature_mismatch",
                 "reference_path": ref.path,
                 "flags": flags,
-                "nearest": [],
+                "nearest": similarity_info.get("nearest", []),
             }
-
-        distance_info = self._distance_ad(query_x, ref)
-        similarity_info = self._similarity_ad(mol, ref)
-        scaffold = _murcko(mol)
-        scaffold_in_ref = bool(scaffold and scaffold in set(ref.scaffolds))
-        descriptor_flags = self._descriptor_flags(mol, ref)
 
         status, in_domain = self._combine_status(distance_info, similarity_info, scaffold_in_ref, flags, descriptor_flags)
         score = self._combined_score(distance_info, similarity_info, status)
         reason = self._reason(status, distance_info, similarity_info, scaffold_in_ref, flags, descriptor_flags)
+        similarity_tier = self._similarity_tier(similarity_info)
 
         return {
             "task": task,
@@ -144,6 +176,8 @@ class ApplicabilityDomainService:
             "method": "knn_distance+tanimoto+scaffold+descriptor_range",
             "reference_path": ref.path,
             "reference_size": int(ref.X.shape[0]),
+            "seen_in_reference": False,
+            "similarity_tier": similarity_tier,
             "distance": distance_info,
             "similarity": similarity_info,
             "scaffold": scaffold,
@@ -157,7 +191,12 @@ class ApplicabilityDomainService:
         prediction["applicability_domain"] = ad
         prediction["ad_status"] = ad.get("status")
         prediction["ad_status_ru"] = ad.get("status_ru")
-        if prediction.get("ad_score") is None:
+        should_override_ad = bool(
+            ad.get("seen_in_reference")
+            or ad.get("similarity_tier") in {"high", "medium"}
+            or prediction.get("ad_score") is None
+        )
+        if should_override_ad:
             prediction["ad_score"] = ad.get("ad_score")
         distance = ad.get("distance") or {}
         if prediction.get("ad_distance") is None:
@@ -180,7 +219,6 @@ class ApplicabilityDomainService:
         status = str(ad.get("status") or "unknown")
         status_ru = ad.get("status_ru") or self._status_ru(status)
         ad_score = _safe_float(ad.get("ad_score"))
-        reason = str(ad.get("reason") or "").strip()
 
         note_parts = [f"AD: {status_ru}"]
 
@@ -191,19 +229,41 @@ class ApplicabilityDomainService:
         adjusted = base_score
         calibration = "model_probability"
         if status == "out_of_domain" or ad.get("in_domain") is False:
-            adjusted = min(base_score, 0.35)
+            adjusted = min(base_score, self.calibration.out_of_domain_cap)
             calibration = "confidence_capped_by_out_of_domain_ad"
             note_parts.append("уверенность снижена: молекула вне области применимости")
         elif status == "borderline":
-            adjusted = min(base_score, 0.60)
+            adjusted = min(base_score, self.calibration.borderline_cap)
             calibration = "confidence_capped_by_borderline_ad"
             note_parts.append("уверенность ограничена: пограничная область применимости")
         elif status == "unknown":
-            adjusted = min(base_score, 0.55)
+            adjusted = min(base_score, self.calibration.unknown_cap)
             calibration = "confidence_capped_by_unknown_ad"
             note_parts.append("уверенность ограничена: AD недоступна")
+        elif ad.get("seen_in_reference"):
+            if base_score >= self.calibration.exact_match_min_model_confidence:
+                adjusted = max(base_score, self.calibration.exact_match_promote_to)
+                calibration = "confidence_promoted_by_exact_reference_match"
+            else:
+                calibration = "exact_reference_match_with_low_model_confidence"
+                note_parts.append("exact match найден, но модельная уверенность слабая")
+        elif ad.get("similarity_tier") == "high":
+            if base_score >= self.calibration.exact_match_min_model_confidence:
+                adjusted = max(base_score, self.calibration.similar_high_promote_to)
+                calibration = "confidence_promoted_by_high_similarity_reference"
+            else:
+                calibration = "high_similarity_reference_with_low_model_confidence"
+                note_parts.append("близкий аналог найден, но модельная уверенность слабая")
+        elif ad.get("similarity_tier") == "medium":
+            adjusted = min(base_score, self.calibration.similar_medium_confidence_cap)
+            calibration = "confidence_capped_by_medium_similarity_reference"
+            note_parts.append("уверенность ограничена: аналоговая близость средняя")
         elif status == "in_domain" and ad_score is not None:
-            adjusted = (0.75 * base_score) + (0.25 * ad_score)
+            denom = self.calibration.in_domain_model_weight + self.calibration.in_domain_ad_weight
+            adjusted = (
+                (self.calibration.in_domain_model_weight * base_score)
+                + (self.calibration.in_domain_ad_weight * ad_score)
+            ) / denom
             calibration = "model_probability_weighted_with_ad_score"
 
         adjusted = max(0.0, min(1.0, float(adjusted)))
@@ -272,7 +332,7 @@ class ApplicabilityDomainService:
         score = _safe_float(prediction.get("ad_score"))
         if in_domain is False:
             status = "out_of_domain"
-        elif ratio is not None and ratio > 0.85:
+        elif ratio is not None and ratio > self.calibration.ratio_borderline:
             status = "borderline"
         elif in_domain is True:
             status = "in_domain"
@@ -325,6 +385,7 @@ class ApplicabilityDomainService:
                 return None
             feature_cols = [str(x) for x in z["feature_cols"].tolist()] if "feature_cols" in z.files else []
             smiles = [str(x) for x in z["smiles"].tolist()] if "smiles" in z.files else []
+            canonical_smiles = [_canonical_from_smiles(smiles_item) for smiles_item in smiles]
             labels = [str(x) for x in z["labels"].tolist()] if "labels" in z.files else []
             scaffolds = [str(x) for x in z["scaffolds"].tolist()] if "scaffolds" in z.files else []
             descriptor_names = [str(x) for x in z["descriptor_names"].tolist()] if "descriptor_names" in z.files else []
@@ -335,6 +396,7 @@ class ApplicabilityDomainService:
                 X=z[X_key].astype(np.float32),
                 feature_cols=feature_cols,
                 smiles=smiles,
+                canonical_smiles=canonical_smiles,
                 labels=labels,
                 scaffolds=scaffolds,
                 descriptor_names=descriptor_names,
@@ -407,6 +469,39 @@ class ApplicabilityDomainService:
             })
         return {"top_similarity": nearest[0]["similarity"] if nearest else None, "nearest": nearest}
 
+    def _exact_reference_match(
+        self,
+        mol: Chem.Mol,
+        ref: ReferenceBundle,
+        similarity_info: Dict[str, Any],
+    ) -> Dict[str, Any] | None:
+        query = _canonical_smiles(mol)
+        if not query:
+            return None
+        for i, canonical in enumerate(ref.canonical_smiles):
+            if canonical and canonical == query:
+                nearest = similarity_info.get("nearest") or []
+                return {
+                    "index": int(i),
+                    "smiles": ref.smiles[i] if i < len(ref.smiles) else query,
+                    "canonical_smiles": canonical,
+                    "label": ref.labels[i] if i < len(ref.labels) else "",
+                    "scaffold": ref.scaffolds[i] if i < len(ref.scaffolds) else "",
+                    "similarity": 1.0,
+                    "nearest_rank": 1 if nearest else None,
+                }
+        return None
+
+    def _similarity_tier(self, similarity_info: Dict[str, Any]) -> str | None:
+        top_sim = _safe_float(similarity_info.get("top_similarity"))
+        if top_sim is None:
+            return None
+        if top_sim >= self.calibration.similar_high_tanimoto:
+            return "high"
+        if top_sim >= self.calibration.similar_medium_tanimoto:
+            return "medium"
+        return None
+
     def _descriptor_flags(self, mol: Chem.Mol, ref: ReferenceBundle) -> list[Dict[str, Any]]:
         if ref.descriptor_min is None or ref.descriptor_max is None or not ref.descriptor_names:
             return []
@@ -459,15 +554,17 @@ class ApplicabilityDomainService:
         ratio = _safe_float(distance_info.get("ratio"))
         top_sim = _safe_float(similarity_info.get("top_similarity"))
         high_flags = any(flag.get("level") == "high" for flag in flags)
-        if ratio is not None and ratio > 1.25:
-            return "out_of_domain", False
-        if top_sim is not None and top_sim < 0.30:
-            return "out_of_domain", False
         if high_flags or len(descriptor_flags) >= 3:
             return "out_of_domain", False
-        if ratio is not None and ratio > 1.0:
+        if self._similarity_tier(similarity_info) in {"high", "medium"}:
+            return "in_domain", True
+        if ratio is not None and ratio > self.calibration.ratio_out:
+            return "out_of_domain", False
+        if top_sim is not None and top_sim < self.calibration.sim_out:
+            return "out_of_domain", False
+        if ratio is not None and ratio > self.calibration.ratio_borderline:
             return "borderline", True
-        if top_sim is not None and top_sim < 0.45:
+        if top_sim is not None and top_sim < self.calibration.sim_borderline:
             return "borderline", True
         if not scaffold_in_ref:
             return "borderline", True
@@ -477,13 +574,20 @@ class ApplicabilityDomainService:
 
     def _combined_score(self, distance_info, similarity_info, status: str) -> Optional[float]:
         ratio = _safe_float(distance_info.get("ratio"))
-        d_score = None if ratio is None else max(0.0, min(1.0, 1.0 - (ratio / 1.25)))
+        d_score = None
+        if ratio is not None and self.calibration.ratio_out > 0:
+            d_score = max(0.0, min(1.0, 1.0 - (ratio / self.calibration.ratio_out)))
         sim = _safe_float(similarity_info.get("top_similarity"))
         values = [v for v in [d_score, sim] if v is not None]
         if not values:
             return None
         score = float(np.mean(values))
-        if status == "borderline":
+        tier = self._similarity_tier(similarity_info)
+        if tier == "high":
+            score = max(score, self.calibration.similar_high_ad_floor)
+        elif tier == "medium":
+            score = max(score, self.calibration.similar_medium_ad_floor)
+        elif status == "borderline":
             score = min(score, 0.55)
         elif status == "out_of_domain":
             score = min(score, 0.25)

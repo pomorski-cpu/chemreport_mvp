@@ -12,6 +12,37 @@ from core.featurizer_rdkit_inchi import build_feature_df
 from core.utils import resource_path
 
 
+def _normalize_multilabel_items(labels: list[Any] | tuple[Any, ...] | set[Any] | str | None) -> set[str]:
+    if labels is None:
+        return set()
+    if isinstance(labels, str):
+        raw_items = labels.replace("|", ";").split(";")
+    else:
+        raw_items = list(labels)
+    items = {str(item).strip() for item in raw_items if str(item).strip()}
+    main_items = {item for item in items if item.lower() != "other"}
+    return main_items or items
+
+
+def multilabel_hit_metrics(
+    predicted_labels: list[Any] | tuple[Any, ...] | set[Any] | str | None,
+    true_labels: list[Any] | tuple[Any, ...] | set[Any] | str | None,
+) -> Dict[str, Any]:
+    predicted = _normalize_multilabel_items(predicted_labels)
+    truth = _normalize_multilabel_items(true_labels)
+    intersection = predicted & truth
+    union = predicted | truth
+    return {
+        "predicted_labels": sorted(predicted),
+        "true_labels": sorted(truth),
+        "any_hit": bool(intersection),
+        "all_hit": bool(truth) and truth.issubset(predicted),
+        "exact_match": bool(truth) and predicted == truth,
+        "jaccard": round((len(intersection) / len(union)) if union else 0.0, 3),
+        "extra_label_count": len(predicted - truth),
+    }
+
+
 @dataclass(frozen=True)
 class ToxPaths:
     pipeline_pkl: str = "models/mlp_tox_pipeline.pkl"          # РїРѕРјРµРЅСЏР№ РїРѕРґ СЂРµР°Р»СЊРЅРѕРµ РёРјСЏ
@@ -153,7 +184,7 @@ class ToxPredictor:
             selected_idx = [int(max(range(min(len(labels), len(probs))), key=lambda i: probs[i]))]
 
         selected_labels = [labels[i] for i in selected_idx]
-        main_labels = [label for label in selected_labels if label != "other"]
+        main_labels = [label for label in selected_labels if str(label).strip().lower() != "other"]
         if main_labels:
             selected_labels = main_labels
             selected_idx = [labels.index(label) for label in selected_labels]
@@ -173,6 +204,10 @@ class ToxPredictor:
             conf_txt = "Низкая"
 
         selected_bits = [str(label) for label in selected_labels]
+        label_probabilities = {
+            str(label): float(probs[i])
+            for i, label in enumerate(labels[: len(probs)])
+        }
         notes_bits = [
             "метки: " + (", ".join(selected_bits) if selected_bits else value),
         ]
@@ -185,6 +220,9 @@ class ToxPredictor:
             "toxicity_threshold": None,
             "toxicity_decision": None,
             "confidence_score": confidence_score,
+            "predicted_labels": selected_bits,
+            "label_probabilities": label_probabilities,
+            "multilabel_success_metric": "at_least_one_hit",
             "ad_distance": None,
             "ad_threshold": None,
             "ad_ratio": None,
@@ -244,7 +282,7 @@ class ToxPredictor:
         label = self.class_names.get(str(final_class), self.class_names.get(final_class, str(final_class)))
 
         conf_txt = ""
-        confidence_score = prob_toxic if prob_toxic is not None else proba
+        confidence_score = max(prob_toxic, 1.0 - prob_toxic) if prob_toxic is not None else proba
         if prob_toxic is not None and self.toxic_class_id is not None:
             conf_txt = (
                 f"P(токсичности)={prob_toxic:.3f}; "

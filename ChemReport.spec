@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('models', 'models'), ('web', 'web')]
+datas = [('models', 'models'), ('web', 'web'), ('config', 'config')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('sklearn')
